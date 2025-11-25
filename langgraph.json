@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "course-assistant": "./course_assistant.py:agent"
+  },
+  "env": ".env"
+}

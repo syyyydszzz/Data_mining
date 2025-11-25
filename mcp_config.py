@@ -44,9 +44,11 @@ class MCPClient:
         self._connection_error: Optional[str] = None
         self._cleanup_task: Optional[asyncio.Task] = None  # 后台清理任务
 
-    async def connect(self, timeout: int = 60) -> Dict[str, Any]:
+    async def connect(self, timeout: int = 120) -> Dict[str, Any]:
         """
         连接到Chrome DevTools MCP服务器 (官方推荐方式)
+
+        注意：首次运行时 npx 需要下载包，Chrome 需要启动，所以超时设置为 120 秒
         """
         if self._initialized:
             return self.tools
@@ -71,13 +73,15 @@ class MCPClient:
                 args = [
                     "-y",  # 自动确认
                     "chrome-devtools-mcp@latest",
-                    "--browserUrl=http://127.0.0.1:9222"  # 使用 = 分隔（官方格式）
+                    "--browserUrl=http://127.0.0.1:9222",  # 连接到手动启动的Chrome
                 ]
                 logger.info(f"🔍 [DEBUG] Executing: npx -y chrome-devtools-mcp@latest --browserUrl=http://127.0.0.1:9222")
+                logger.info("ℹ️  Connecting to manually started Chrome with remote debugging")
+                logger.info("ℹ️  Please ensure Chrome is running with: --remote-debugging-port=9222")
             else:
                 # 备用方案：使用绝对路径
                 command = "/Users/suyongyuan/.nvm/versions/node/v24.11.0/bin/chrome-devtools-mcp"
-                args = ["--browserUrl=http://127.0.0.1:9222"]  # 使用 = 分隔（官方格式）
+                args = ["--browserUrl=http://127.0.0.1:9222"]  # 连接到手动启动的Chrome
                 logger.info(f"🔍 [DEBUG] Executing: {command} --browserUrl=http://127.0.0.1:9222")
 
             # 3. 启动参数
@@ -131,11 +135,26 @@ class MCPClient:
 
             # 等待初始化完成（带超时）
             start_time = asyncio.get_event_loop().time()
+            check_count = 0
             while not self._initialized:
-                if asyncio.get_event_loop().time() - start_time > timeout:
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > timeout:
                     if self._cleanup_task:
                         self._cleanup_task.cancel()
-                    raise asyncio.TimeoutError("Connection initialization timeout")
+                    raise asyncio.TimeoutError(
+                        f"Connection initialization timeout after {timeout}s. "
+                        f"This may happen if:\n"
+                        f"  1. npx is downloading chrome-devtools-mcp (first run)\n"
+                        f"  2. Chrome is slow to start\n"
+                        f"  3. Network issues\n"
+                        f"Try running manually: npx -y chrome-devtools-mcp@latest"
+                    )
+
+                # 每 5 秒打印一次进度
+                check_count += 1
+                if check_count % 50 == 0:  # 0.1s * 50 = 5s
+                    logger.info(f"[MCP] Still connecting... ({elapsed:.1f}s / {timeout}s)")
+
                 await asyncio.sleep(0.1)
 
             return self.tools

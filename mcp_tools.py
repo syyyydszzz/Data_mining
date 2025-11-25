@@ -35,7 +35,7 @@ async def mcp_navigate_page(url: str, timeout: int = 30000) -> str:
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__navigate_page",
+            "navigate_page",
             {
                 "url": url,
                 "timeout": timeout,
@@ -72,12 +72,33 @@ async def mcp_take_snapshot(verbose: bool = False) -> str:
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__take_snapshot",
+            "take_snapshot",
             {"verbose": verbose}
         )
-        # result应该已经是字符串格式的snapshot
+
+        # result 可能是特殊对象，包含 content 字段
+        # content 是一个列表，包含 TextContent 对象
+        if hasattr(result, 'content') and result.content:
+            # 提取第一个 TextContent 的 text 字段
+            if len(result.content) > 0:
+                first_content = result.content[0]
+                if hasattr(first_content, 'text'):
+                    return first_content.text
+                # 如果是字典
+                elif isinstance(first_content, dict) and 'text' in first_content:
+                    return first_content['text']
+
+        # 如果是字典格式
         if isinstance(result, dict):
+            # 检查是否有 content 字段
+            if 'content' in result and isinstance(result['content'], list) and len(result['content']) > 0:
+                first_content = result['content'][0]
+                if isinstance(first_content, dict) and 'text' in first_content:
+                    return first_content['text']
+            # 否则返回整个 JSON
             return json.dumps(result, ensure_ascii=False)
+
+        # 最后尝试转换为字符串
         return str(result)
     except Exception as e:
         logger.error(f"[MCP Tool] take_snapshot failed: {e}")
@@ -107,7 +128,7 @@ async def mcp_click_element(uid: str, dblClick: bool = False) -> str:
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__click",
+            "click",
             {
                 "uid": uid,
                 "dblClick": dblClick
@@ -143,7 +164,7 @@ async def mcp_fill_form(uid: str, value: str) -> str:
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__fill",
+            "fill",
             {
                 "uid": uid,
                 "value": value
@@ -190,13 +211,31 @@ async def mcp_evaluate_script(function: str, args: Optional[list] = None) -> str
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__evaluate_script",
+            "evaluate_script",
             {
                 "function": function,
                 "args": args or []
             }
         )
-        return json.dumps({"success": True, "result": result}, ensure_ascii=False)
+
+        # 提取实际结果（与 take_snapshot 相同的处理）
+        actual_result = result
+        if hasattr(result, 'content') and result.content:
+            if len(result.content) > 0:
+                first_content = result.content[0]
+                if hasattr(first_content, 'text'):
+                    # 尝试解析为 JSON
+                    try:
+                        actual_result = json.loads(first_content.text)
+                    except:
+                        actual_result = first_content.text
+                elif isinstance(first_content, dict) and 'text' in first_content:
+                    try:
+                        actual_result = json.loads(first_content['text'])
+                    except:
+                        actual_result = first_content['text']
+
+        return json.dumps({"success": True, "result": actual_result}, ensure_ascii=False)
     except Exception as e:
         logger.error(f"[MCP Tool] evaluate_script failed: {e}")
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -225,7 +264,7 @@ async def mcp_wait_for_text(text: str, timeout: int = 30000) -> str:
     """
     try:
         result = await mcp_client.call_tool(
-            "mcp__chrome-devtools__wait_for",
+            "wait_for",
             {
                 "text": text,
                 "timeout": timeout

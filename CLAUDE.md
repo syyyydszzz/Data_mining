@@ -437,6 +437,40 @@ const kbStatusLabel = kbEnabled
   : "KB OFF: Answer with general knowledge only";
 ```
 
+### Message Filtering Pattern (`ChatMessage.tsx:48-67`)
+
+**System instructions are hidden from users** for special modes (CheatSheet and Forum Post).
+
+**How it works**:
+1. Frontend prepends system instructions to user message
+2. Backend receives full payload with instructions
+3. Frontend filters display to show only user content with emoji
+
+**Implementation**:
+```typescript
+// Remove KB_STATUS marker
+messageContent = messageContent.replace(/^\[KB_STATUS:(ON|OFF)\]\n?/, "");
+
+// CheatSheet mode: show only topic
+const cheatSheetMatch = messageContent.match(/^Cheat Sheet Mode Request\nTopic:\s*(.+?)(?:\nInstructions:[\s\S]*)?$/);
+if (cheatSheetMatch) {
+  messageContent = `📝 ${cheatSheetMatch[1]}`;
+}
+
+// Forum Post mode: show only user content
+const forumPostMatch = messageContent.match(/^Forum Post Request\nPlease publish the following forum post to Moodle:\n\n([\s\S]+?)(?:\n\nInstructions:[\s\S]*)?$/);
+if (forumPostMatch) {
+  messageContent = `📮 ${forumPostMatch[1]}`;
+}
+```
+
+**User sees**:
+- CheatSheet: `📝 Machine Learning Concepts`
+- Forum Post: `📮 [their actual content]`
+
+**Backend receives**:
+- Full payload with system instructions for agent routing
+
 ---
 
 ## LangGraph Server Integration

@@ -16,14 +16,12 @@ from deepagents import create_deep_agent
 
 # Local imports
 from course_tools import (
-    ALL_TOOLS,
+    BASIC_TOOLS,
+    MOODLE_TOOLS,
     lightrag_query,
-    get_lecture_content,
-    search_exam_papers,
+    create_cheat_sheet,
     generate_forum_draft,
     format_forum_post,
-    generate_study_report,
-    create_cheat_sheet,
     fill_moodle_forum,  # Moodle发布工具
 )
 from lightrag_client import get_lightrag_client
@@ -43,15 +41,11 @@ except ImportError as e:
 TOOL_MAP = {
     # RAG工具
     "lightrag_query": lightrag_query,
-    "get_lecture_content": get_lecture_content,
-    "search_exam_papers": search_exam_papers,
+    "create_cheat_sheet": create_cheat_sheet,
     # 论坛工具
     "generate_forum_draft": generate_forum_draft,
     "format_forum_post": format_forum_post,
     "fill_moodle_forum": fill_moodle_forum,  # Moodle发布
-    # 学习报告工具
-    "generate_study_report": generate_study_report,
-    "create_cheat_sheet": create_cheat_sheet,
 }
 
 # 注意：MCP wrapper functions (mcp_navigate_page等) 不再是独立工具
@@ -107,11 +101,9 @@ forum_composer["tools"] = convert_tools(forum_composer.get("tools", []))
 cheat_sheet_generator = subagents_config["cheat_sheet_generator"].copy()
 cheat_sheet_generator["tools"] = convert_tools(cheat_sheet_generator.get("tools", []))
 
-study_material_generator = subagents_config["study_material_generator"].copy()
-study_material_generator["tools"] = convert_tools(study_material_generator.get("tools", []))
-
 moodle_publisher = subagents_config["moodle_publisher"].copy()
-moodle_publisher["tools"] = convert_tools(moodle_publisher.get("tools", []))
+# moodle_publisher 使用独占的 MOODLE_TOOLS（fill_moodle_forum）
+moodle_publisher["tools"] = MOODLE_TOOLS
 
 logger.info(f"✅ Loaded {len(subagents_config)} subagents:")
 for name in subagents_config.keys():
@@ -131,12 +123,12 @@ else:
     logger.warning("     cd lightrag && docker-compose up -d")
 
 # === 初始化 MCP (Chrome DevTools) ===
-# MCP初始化改为可选的、快速失败的方式
-# 如果初始化失败，工具会在首次使用时再次尝试连接
+# 注意：MCP 初始化是异步的，但 LangGraph Server 会在需要时自动处理
+# 这里只记录可用性，实际连接在首次工具调用时进行
 if MCP_AVAILABLE:
     logger.info("🌐 MCP (Chrome DevTools) is available")
-    logger.info("ℹ️  MCP will connect on first use (when publishing to Moodle)")
-    logger.info("ℹ️  To pre-start: npx -y chrome-devtools-mcp@latest")
+    logger.info("ℹ️  MCP will auto-connect when publishing to Moodle")
+    logger.info("ℹ️  Chrome will be started automatically by MCP")
 else:
     logger.info("ℹ️  MCP not available - Install with: pip install mcp markdown")
 
@@ -168,14 +160,13 @@ logger.info("🚀 Creating Course Assistant Agent with DeepAgents framework...")
 
 course_agent = create_deep_agent(
     model=model,
-    tools=ALL_TOOLS,
+    tools=BASIC_TOOLS,  # Main Agent 只使用基础工具，不包含 fill_moodle_forum
     system_prompt=SYSTEM_INSTRUCTIONS,
     subagents=[
         knowledge_retriever,
         forum_composer,
         cheat_sheet_generator,
-        study_material_generator,
-        moodle_publisher  # Moodle发布子智能体
+        moodle_publisher  # Moodle发布子智能体（独占 fill_moodle_forum 工具）
     ]
 ).with_config({"recursion_limit": RECURSION_LIMIT})
 
@@ -194,7 +185,8 @@ logger.info("Configuration:")
 logger.info(f"  - Model: {CLAUDE_MODEL}")
 logger.info(f"  - LightRAG: {LIGHTRAG_BASE_URL}")
 logger.info(f"  - Recursion Limit: {RECURSION_LIMIT}")
-logger.info(f"  - Tools: {len(ALL_TOOLS)}")
+logger.info(f"  - Main Agent Tools: {len(BASIC_TOOLS)}")
+logger.info(f"  - Total Tools (including subagent exclusive): {len(BASIC_TOOLS + MOODLE_TOOLS)}")
 logger.info(f"  - Subagents: {len(subagents_config)}")
 logger.info("")
 logger.info("To start the server:")

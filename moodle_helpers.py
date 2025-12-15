@@ -22,7 +22,7 @@ def parse_snapshot_for_text(
     case_sensitive: bool = False
 ) -> Optional[str]:
     """
-    从snapshot中查找包含指定文本的元素UID
+    从snapshot中查找包含指定文本的元素UID（增强版）
 
     Args:
         snapshot: MCP返回的页面快照字符串
@@ -37,39 +37,39 @@ def parse_snapshot_for_text(
         uid = parse_snapshot_for_text(snapshot, "Add discussion topic", element_type="button")
     """
     try:
-        # Snapshot格式通常是文本形式，包含元素的层级结构
-        # 每行格式类似: "[uid: button-123] Button: Add discussion topic"
-
         search_text = text if case_sensitive else text.lower()
-        snapshot_to_search = snapshot if case_sensitive else snapshot.lower()
-
-        # 查找包含目标文本的行
         lines = snapshot.split('\n')
 
-        for line in lines:
+        logger.debug(f"[Moodle Helper] Searching for text '{text}' in {len(lines)} lines")
+
+        for i, line in enumerate(lines):
+            line_to_search = line if case_sensitive else line.lower()
+
             # 检查是否包含目标文本
-            if search_text in (line if case_sensitive else line.lower()):
+            if search_text in line_to_search:
                 # 如果指定了元素类型，检查类型是否匹配
                 if element_type:
                     if element_type.lower() not in line.lower():
                         continue
 
-                # 提取UID - 格式通常是 [uid: xxx] 或类似
+                logger.debug(f"[Moodle Helper] Found text at line {i}: {line[:100]}")
+
+                # 提取UID - MCP使用 uid=xxx 格式
+                uid_match = re.search(r'uid=(\S+)', line)
+                if uid_match:
+                    uid = uid_match.group(1)
+                    logger.info(f"[Moodle Helper] Found element '{text}' with UID: {uid}")
+                    return uid
+
+                # 也尝试旧格式: [uid: xxx] 或 uid: xxx
                 uid_match = re.search(r'\[?uid[:\s]+([^\]\s,]+)', line, re.IGNORECASE)
                 if uid_match:
                     uid = uid_match.group(1)
-                    logger.debug(f"[Moodle Helper] Found element '{text}' with UID: {uid}")
-                    return uid
-
-                # 尝试其他可能的UID格式
-                # 某些snapshot可能使用 "id=xxx" 格式
-                id_match = re.search(r'id[=:\s]+["\']?([^"\'\s,\]]+)', line, re.IGNORECASE)
-                if id_match:
-                    uid = id_match.group(1)
-                    logger.debug(f"[Moodle Helper] Found element '{text}' with ID: {uid}")
+                    logger.info(f"[Moodle Helper] Found element '{text}' with UID (old format): {uid}")
                     return uid
 
         logger.warning(f"[Moodle Helper] Could not find element with text '{text}'")
+        logger.debug(f"[Moodle Helper] Snapshot preview (first 500 chars): {snapshot[:500]}")
         return None
 
     except Exception as e:
@@ -83,7 +83,7 @@ def parse_snapshot_for_input(
     input_type: Optional[str] = None
 ) -> Optional[str]:
     """
-    查找与label关联的输入框元素UID
+    查找与label关联的输入框元素UID（增强版）
 
     Args:
         snapshot: MCP返回的页面快照字符串
@@ -97,35 +97,67 @@ def parse_snapshot_for_input(
         uid = parse_snapshot_for_input(snapshot, "Subject")
     """
     try:
-        # 首先尝试查找label元素
         label_lower = label.lower()
         lines = snapshot.split('\n')
 
+        logger.debug(f"[Moodle Helper] Searching for '{label}' field in {len(lines)} lines")
+
+        # 方法1: 查找label后面的input
         for i, line in enumerate(lines):
             if label_lower in line.lower():
-                # 找到label后，查找附近的input/textarea元素
-                # 通常input会在label的下方几行内
+                logger.debug(f"[Moodle Helper] Found '{label}' at line {i}: {line[:100]}")
 
-                # 检查当前行是否就包含input
-                if 'input' in line.lower() or 'textarea' in line.lower():
-                    uid_match = re.search(r'\[?uid[:\s]+([^\]\s,]+)', line, re.IGNORECASE)
+                # 检查当前行是否包含input
+                if 'textbox' in line.lower() or 'entry' in line.lower():
+                    # MCP snapshot中，textbox/entry 通常表示输入框
+                    uid_match = re.search(r'uid=(\S+)', line)
                     if uid_match:
-                        return uid_match.group(1)
+                        uid = uid_match.group(1)
+                        logger.info(f"[Moodle Helper] Found input in same line with UID: {uid}")
+                        return uid
 
-                # 检查接下来的5行
-                for j in range(i + 1, min(i + 6, len(lines))):
+                # 检查接下来的10行（增加搜索范围）
+                for j in range(i + 1, min(i + 11, len(lines))):
                     next_line = lines[j]
-                    if 'input' in next_line.lower() or 'textarea' in next_line.lower():
-                        if input_type and input_type.lower() not in next_line.lower():
-                            continue
 
-                        uid_match = re.search(r'\[?uid[:\s]+([^\]\s,]+)', next_line, re.IGNORECASE)
+                    # 查找textbox或entry（MCP使用的术语）
+                    if 'textbox' in next_line.lower() or 'entry' in next_line.lower():
+                        # 检查类型是否匹配
+                        if input_type:
+                            if input_type.lower() not in next_line.lower():
+                                continue
+
+                        # 提取UID
+                        uid_match = re.search(r'uid=(\S+)', next_line)
                         if uid_match:
                             uid = uid_match.group(1)
-                            logger.debug(f"[Moodle Helper] Found input for label '{label}' with UID: {uid}")
+                            logger.info(f"[Moodle Helper] Found input at line {j} with UID: {uid}")
                             return uid
 
-        logger.warning(f"[Moodle Helper] Could not find input for label '{label}'")
+        # 方法2: 如果方法1失败，尝试查找任何包含label关键词的textbox
+        logger.debug(f"[Moodle Helper] Method 1 failed, trying method 2: search for textbox with '{label}'")
+        for i, line in enumerate(lines):
+            if 'textbox' in line.lower() and label_lower in line.lower():
+                uid_match = re.search(r'uid=(\S+)', line)
+                if uid_match:
+                    uid = uid_match.group(1)
+                    logger.info(f"[Moodle Helper] Found textbox with '{label}' in text, UID: {uid}")
+                    return uid
+
+        # 方法3: 查找input[name="subject"]这样的模式
+        logger.debug(f"[Moodle Helper] Method 2 failed, trying method 3: search by name attribute")
+        name_pattern = label_lower
+        for line in lines:
+            if f'name="{name_pattern}"' in line.lower() or f"name='{name_pattern}'" in line.lower():
+                uid_match = re.search(r'uid=(\S+)', line)
+                if uid_match:
+                    uid = uid_match.group(1)
+                    logger.info(f"[Moodle Helper] Found input by name attribute, UID: {uid}")
+                    return uid
+
+        logger.warning(f"[Moodle Helper] Could not find input for label '{label}' using any method")
+        # 输出部分快照用于调试
+        logger.debug(f"[Moodle Helper] Snapshot preview (first 500 chars): {snapshot[:500]}")
         return None
 
     except Exception as e:
@@ -133,9 +165,9 @@ def parse_snapshot_for_input(
         return None
 
 
-def markdown_to_moodle_html(markdown_text: str) -> str:
+async def markdown_to_moodle_html(markdown_text: str) -> str:
     """
-    将Markdown格式转换为Moodle兼容的HTML
+    将Markdown格式转换为Moodle兼容的HTML (异步版本)
 
     Moodle的TinyMCE编辑器支持标准HTML。
     这个函数将Markdown转换为干净的HTML。
@@ -147,7 +179,7 @@ def markdown_to_moodle_html(markdown_text: str) -> str:
         str: HTML格式的文本
 
     Example:
-        html = markdown_to_moodle_html("## Title\\n- Item 1\\n- Item 2")
+        html = await markdown_to_moodle_html("## Title\\n- Item 1\\n- Item 2")
     """
     try:
         # 尝试导入markdown库
@@ -159,11 +191,11 @@ def markdown_to_moodle_html(markdown_text: str) -> str:
             # 简单的Markdown转换（如果没有安装markdown库）
             return simple_markdown_to_html(markdown_text)
 
-        # 使用markdown库进行转换
-        # extra: 支持额外的Markdown语法
-        # nl2br: 单个换行符转换为<br>
-        # tables: 支持表格语法
-        html = markdown.markdown(
+        # 使用asyncio.to_thread将同步的markdown转换移到线程池
+        # 这样可以避免LangGraph的blocking I/O检测
+        import asyncio
+        html = await asyncio.to_thread(
+            markdown.markdown,
             markdown_text,
             extensions=['extra', 'nl2br', 'tables']
         )
@@ -173,8 +205,9 @@ def markdown_to_moodle_html(markdown_text: str) -> str:
 
     except Exception as e:
         logger.error(f"[Moodle Helper] Error converting Markdown: {e}")
-        # 出错时返回原始文本
-        return markdown_text
+        # 出错时使用简单转换而不是返回原始文本
+        logger.info("[Moodle Helper] Falling back to simple conversion")
+        return simple_markdown_to_html(markdown_text)
 
 
 def simple_markdown_to_html(text: str) -> str:

@@ -135,107 +135,6 @@ def lightrag_query(
         }, ensure_ascii=False, indent=2)
 
 
-@tool
-def get_lecture_content(
-    lecture_id: int,
-    slide_range: str,
-) -> str:
-    """
-    Get specific slide content from a lecture
-
-    Use case: When precise location of content from a specific lecture is needed (only call when [KB_STATUS:ON])
-
-    Args:
-        lecture_id: Lecture number (1-12, depending on course)
-        slide_range: Slide range (e.g., "26-27" or "15")
-
-    Returns:
-        JSON-formatted lecture content and source information
-
-    Example:
-        get_lecture_content(8, "26-27")
-        → Returns content from Lecture 8, slides 26-27
-    """
-    logger.info(f"[TOOL] get_lecture_content: Lecture {lecture_id}, Slides {slide_range}")
-
-    query = f"Content of Lecture {lecture_id}, Slides {slide_range}"
-
-    try:
-        # 使用 local 模式进行精确检索
-        result = lightrag.query(
-            query=query,
-            mode="local",
-            include_references=True
-        )
-
-        return json.dumps({
-            "lecture_id": lecture_id,
-            "slide_range": slide_range,
-            "response": result.get("response", ""),
-            "references": result.get("references", []),
-            "sources": result.get("sources", []),
-            "citation": f"Data Mining Lecture {lecture_id}, Slides {slide_range}"
-        }, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        logger.exception(f"[TOOL] get_lecture_content error: {e}")
-        return json.dumps({
-            "error": str(e),
-            "lecture_id": lecture_id,
-            "slide_range": slide_range
-        }, ensure_ascii=False, indent=2)
-
-
-@tool
-def search_exam_papers(
-    topic: str,
-    year: Optional[str] = None,
-) -> str:
-    """
-    Search past exam papers for related questions
-
-    Use case: Find exam questions and answers about a topic from past exams (only call when [KB_STATUS:ON])
-
-    Args:
-        topic: Topic (e.g., "RAG architecture", "Transformer")
-        year: Optional year filter (e.g., "2023")
-
-    Returns:
-        JSON-formatted exam questions and source information
-
-    Example:
-        search_exam_papers("RAG architecture", "2023")
-        → Returns questions about RAG from 2023 exam
-    """
-    logger.info(f"[TOOL] search_exam_papers: topic={topic}, year={year}")
-
-    query = f"Past exam questions about {topic}"
-    if year:
-        query += f" (year {year})"
-
-    try:
-        result = lightrag.query(
-            query=query,
-            mode="hybrid",
-            include_references=True
-        )
-
-        return json.dumps({
-            "topic": topic,
-            "year": year,
-            "response": result.get("response", ""),
-            "references": result.get("references", []),
-            "sources": result.get("sources", [])
-        }, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        logger.exception(f"[TOOL] search_exam_papers error: {e}")
-        return json.dumps({
-            "error": str(e),
-            "topic": topic
-        }, ensure_ascii=False, indent=2)
-
-
 # ==================== 论坛工具 ====================
 
 @tool
@@ -346,6 +245,49 @@ async def fill_moodle_forum(
     """
     logger.info(f"[TOOL] fill_moodle_forum called: subject='{subject[:50]}...'")
 
+    # 智能提取 subject：如果提供的 subject 看起来不像一个合适的标题，
+    # 就从 message 中提取第一个 Markdown 标题
+    import re
+
+    should_extract_title = (
+        # subject 包含指令词
+        any(word in subject.lower() for word in ["post a", "write a", "create a", "about"]) or
+        # subject 太短
+        len(subject.strip()) < 15 or
+        # subject 全是小写且没有标点
+        (subject.islower() and not any(c in subject for c in ".,!?;:"))
+    )
+
+    if should_extract_title and message:
+        # 从 message 中提取第一个标题
+        # 支持 # Title 或 ## Title 格式
+        title_match = re.search(r'^(#+\s+.+?)(\n|$)', message, re.MULTILINE)
+        if title_match:
+            # 提取标题文本（去掉 # 符号）
+            full_heading = title_match.group(1)
+            extracted_title = re.sub(r'^#+\s+', '', full_heading).strip()
+            logger.info(f"[TOOL] Auto-extracted subject from message: '{extracted_title}'")
+            subject = extracted_title
+
+            # 从 message 中移除这个标题行（避免重复）
+            message = message[title_match.end():].lstrip('\n')
+            logger.info(f"[TOOL] Removed title heading from message to avoid duplication")
+        else:
+            # 如果没有 Markdown 标题，使用 message 的第一行（最多100个字符）
+            first_line = message.split('\n')[0].strip()
+            if len(first_line) > 100:
+                first_line = first_line[:97] + "..."
+            if first_line:
+                logger.info(f"[TOOL] Using first line as subject: '{first_line}'")
+                subject = first_line
+                # 也从 message 中移除第一行
+                message_lines = message.split('\n', 1)
+                if len(message_lines) > 1:
+                    message = message_lines[1].lstrip('\n')
+                    logger.info(f"[TOOL] Removed first line from message to avoid duplication")
+
+    logger.info(f"[TOOL] Final subject: '{subject}'")
+
     # 检查MCP工具是否可用
     if not MCP_TOOLS_AVAILABLE:
         return json.dumps({
@@ -386,49 +328,76 @@ async def fill_moodle_forum(
         logger.info("[TOOL] Taking snapshot to find button...")
         snapshot = await mcp_take_snapshot(verbose=False)
 
+        # 保存论坛页面快照用于调试（使用异步I/O）
+        try:
+            from pathlib import Path
+            import asyncio
+            forum_snapshot_file = Path("debug_forum_snapshot.txt")
+            # 使用 asyncio.to_thread 避免 blocking I/O
+            await asyncio.to_thread(forum_snapshot_file.write_text, str(snapshot), encoding='utf-8')
+            logger.info(f"[TOOL] Forum snapshot saved to: {forum_snapshot_file}")
+            logger.debug(f"[TOOL] Forum snapshot length: {len(str(snapshot))} chars")
+        except Exception as e:
+            logger.warning(f"[TOOL] Could not save forum snapshot: {e}")
+
         logger.info("[TOOL] Parsing snapshot for button UID...")
-        button_uid = parse_snapshot_for_text(snapshot, "Add discussion topic", element_type="button")
+        logger.debug(f"[TOOL] Forum snapshot preview (first 1000 chars): {str(snapshot)[:1000]}")
+
+        # 确保 snapshot 是字符串
+        snapshot_str = str(snapshot)
+        button_uid = parse_snapshot_for_text(snapshot_str, "Add discussion topic", element_type=None)
 
         if not button_uid:
             return json.dumps({
                 "success": False,
                 "error": "Could not find 'Add discussion topic' button",
-                "message": "Please make sure you're on the Moodle forum page and try again",
+                "message": "Please check the debug_forum_snapshot.txt file to see the page structure",
                 "troubleshooting": [
                     "Check if you're logged into Moodle",
                     "Verify the forum URL is correct",
-                    "Make sure the page has fully loaded"
-                ]
+                    "Make sure the page has fully loaded",
+                    "Review debug_forum_snapshot.txt to find the actual button text"
+                ],
+                "debug_files": ["debug_forum_snapshot.txt"]
             }, ensure_ascii=False, indent=2)
 
         logger.info(f"[TOOL] Clicking button with UID: {button_uid}")
         await mcp_click_element(button_uid)
 
-        # Step 3: 等待表单加载
+        # Step 3: 等待表单加载并使用 JavaScript 填充
         logger.info("[TOOL] Waiting for form to load...")
-        await mcp_wait_for_text("Subject", timeout=10000)
+        import asyncio
+        await asyncio.sleep(2)  # 等待展开动画完成
 
-        # Step 4: 填充Subject字段
-        logger.info("[TOOL] Taking snapshot to find form fields...")
-        snapshot = await mcp_take_snapshot(verbose=False)
+        # Step 4: 使用 JavaScript 直接填充 Subject 字段（更可靠）
+        logger.info("[TOOL] Filling Subject field with JavaScript...")
+        escaped_subject = json.dumps(subject)
 
-        logger.info("[TOOL] Finding Subject input field...")
-        subject_uid = parse_snapshot_for_input(snapshot, "Subject")
+        subject_script = f"""
+() => {{
+    // 查找 Subject 输入框
+    const subjectInput = document.querySelector('#id_subject') ||
+                        document.querySelector('input[name="subject"]') ||
+                        document.querySelector('input[type="text"][required]');
 
-        if not subject_uid:
-            return json.dumps({
-                "success": False,
-                "error": "Could not find Subject input field",
-                "message": "The form structure may have changed. Please fill the form manually.",
-                "debug_info": "Subject field UID not found in snapshot"
-            }, ensure_ascii=False, indent=2)
+    if (subjectInput) {{
+        subjectInput.value = {escaped_subject};
+        // 触发 change 事件确保 Moodle 检测到输入
+        subjectInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        subjectInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        return {{ success: true, method: 'direct-js' }};
+    }}
 
-        logger.info(f"[TOOL] Filling Subject field with UID: {subject_uid}")
-        await mcp_fill_form(subject_uid, subject)
+    return {{ success: false, error: 'Subject input not found' }};
+}}
+"""
+
+        subject_result = await mcp_evaluate_script(subject_script)
+        logger.info(f"[TOOL] Subject fill result: {subject_result}")
 
         # Step 5: 填充Message字段（TinyMCE富文本编辑器）
         logger.info("[TOOL] Converting Markdown to HTML...")
-        message_html = markdown_to_moodle_html(message)
+        message_html = await markdown_to_moodle_html(message)
 
         logger.info("[TOOL] Preparing JavaScript to set TinyMCE content...")
         # 使用JSON转义来安全地处理HTML内容
@@ -519,48 +488,7 @@ async def fill_moodle_forum(
 
 # ==================== 报告生成工具 ====================
 
-@tool
-def generate_study_report(
-    topic: str,
-    lectures: str,  # JSON list as string, e.g., "[7, 8, 9]"
-    include_examples: bool = True
-) -> str:
-    """
-    Generate personalized study report
-
-    Use case: When user requests review materials for a topic
-
-    Args:
-        topic: Topic (e.g., "RAG architecture")
-        lectures: Lecture range (JSON list string, e.g., "[7, 8, 9]")
-        include_examples: Whether to include examples
-
-    Returns:
-        Structured study report metadata (actual report generated by Study Material Generator Agent)
-
-    Note: This tool is called by the Study Material Generator Agent
-    """
-    logger.info(f"[TOOL] generate_study_report: topic={topic}, lectures={lectures}")
-
-    try:
-        lectures_list = json.loads(lectures) if isinstance(lectures, str) else lectures
-
-        return json.dumps({
-            "tool": "generate_study_report",
-            "status": "delegating_to_subagent",
-            "subagent": "study-material-generator",
-            "topic": topic,
-            "lectures": lectures_list,
-            "include_examples": include_examples
-        }, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        logger.exception(f"[TOOL] generate_study_report error: {e}")
-        return json.dumps({
-            "error": str(e),
-            "topic": topic
-        }, ensure_ascii=False, indent=2)
-
+# ==================== Cheat Sheet 工具 ====================
 
 @tool
 def create_cheat_sheet(
@@ -614,20 +542,24 @@ def create_cheat_sheet(
 
 # ==================== 工具列表导出 ====================
 
-# 所有可用工具
-ALL_TOOLS = [
+# ==================== 工具分组 ====================
+# Main Agent 的基础工具（不包含专用工具）
+BASIC_TOOLS = [
     # RAG tools
     lightrag_query,
-    get_lecture_content,
-    search_exam_papers,
-    # Forum tools
+    create_cheat_sheet,
+    # Forum generation tools (内容生成，但不发布)
     generate_forum_draft,
     format_forum_post,
-    fill_moodle_forum,  # Moodle发布工具
-    # Report tools
-    generate_study_report,
-    create_cheat_sheet,
 ]
+
+# Moodle Publisher 专用工具（只有这个subagent能用）
+MOODLE_TOOLS = [
+    fill_moodle_forum,  # 浏览器自动化发布
+]
+
+# 所有可用工具（兼容性保留，供需要的地方使用）
+ALL_TOOLS = BASIC_TOOLS + MOODLE_TOOLS
 
 
 def get_tools_by_mode(mode: str) -> List:
@@ -643,8 +575,6 @@ def get_tools_by_mode(mode: str) -> List:
     if mode == "qa":
         return [
             lightrag_query,
-            get_lecture_content,
-            search_exam_papers,
         ]
     elif mode == "forum":
         return [
@@ -654,8 +584,7 @@ def get_tools_by_mode(mode: str) -> List:
     elif mode == "report":
         return [
             lightrag_query,  # 报告生成也需要检索
-            generate_study_report,
-            create_cheat_sheet,
+            create_cheat_sheet,  # Cheat sheet 生成
         ]
     else:
         return ALL_TOOLS
